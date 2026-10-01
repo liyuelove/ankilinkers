@@ -97,6 +97,9 @@ class AnkiClient:
     def change_deck(self, card_ids: list[int], deck: str) -> None:
         self.invoke("changeDeck", {"cards": card_ids, "deck": deck})
 
+    def cards_info(self, card_ids: list[int]) -> list[dict]:
+        return self.invoke("cardsInfo", {"cards": card_ids})
+
     # ---- 媒体 ----
     def store_media_file(self, filename: str, data_b64: str) -> str:
         return self.invoke(

@@ -56,6 +56,12 @@ def summarize(p: ParsedCard, limit: int = 50) -> str:
     return text[:limit] + ("…" if len(text) > limit else "")
 
 
+def _norm(s: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFC", s).strip()
+
+
 class SyncEngine:
     def __init__(
         self,
@@ -81,6 +87,85 @@ class SyncEngine:
         return self.cfg.default_deck
 
     # ---- 计划 ----
+    def _adopt_existing(self, plan: Plan) -> None:
+        """对"新增"卡按 syid tag 查 Anki 已有笔记：字段一致直接接管登记，不一致转更新。
+
+        映射库丢失/损坏后的自动恢复通道，也防止重复建卡。
+        """
+        if not plan.adds:
+            return
+        try:
+            note_ids = self.anki.find_notes(f"tag:{IDENT_TAG}")
+        except AnkiConnectError:
+            return
+        if not note_ids:
+            return
+        by_syid: dict[str, dict] = {}
+        for n in self.anki.notes_info(note_ids):
+            if not n:
+                continue
+            for t in n.get("tags", []):
+                if t.startswith("syid-"):
+                    by_syid[t[len("syid-"):]] = n
+                    break
+        if not by_syid:
+            return
+
+        adopted_deck_check: list[tuple[Change, dict]] = []
+        still_adds: list[Change] = []
+        adopted = 0
+        for c in plan.adds:
+            n = by_syid.get(c.card_id)
+            if n is None:
+                still_adds.append(c)
+                continue
+            if n.get("modelName") != self._model_for(c.parsed):
+                plan.skips.append((
+                    c.card_id,
+                    f"Anki 已存在同卡笔记但模板为「{n.get('modelName')}」，不一致，请手动处理",
+                ))
+                continue
+            fields = n.get("fields", {})
+            want = self._fields_for(c.parsed)
+            same = all(
+                _norm(fields.get(k, {}).get("value", "")) == _norm(v)
+                for k, v in want.items()
+            )
+            if same:
+                self._record(c, n["noteId"])
+                adopted += 1
+                adopted_deck_check.append((c, n))
+            else:
+                plan.updates.append(Change(
+                    "update", c.card_id, deck=c.deck, note_id=n["noteId"],
+                    parsed=c.parsed, summary=c.summary, block_id=c.block_id,
+                    block_updated=c.block_updated, box=c.box,
+                ))
+
+        # 接管成功的笔记：核对卡组是否需要移动
+        if adopted_deck_check:
+            card_ids = [cid for _, n in adopted_deck_check for cid in n.get("cards", [])]
+            deck_by_card = {}
+            if card_ids:
+                for ci in self.anki.cards_info(card_ids):
+                    if ci:
+                        deck_by_card[ci["cardId"]] = ci.get("deckName", "")
+            for c, n in adopted_deck_check:
+                cur = {deck_by_card.get(cid, "") for cid in n.get("cards", [])}
+                cur.discard("")
+                if cur and cur != {c.deck}:
+                    plan.moves.append(Change(
+                        "move", c.card_id, deck=c.deck, note_id=n["noteId"],
+                        old_deck="、".join(sorted(cur)), summary=c.summary,
+                        block_id=c.block_id, block_updated=c.block_updated, box=c.box,
+                    ))
+
+        plan.adds = still_adds
+        if adopted:
+            plan.notices.append(
+                f"按 syid tag 接管 Anki 已有笔记 {adopted} 张（本地映射缺失已自动恢复）"
+            )
+
     def _full_kramdown(self, block_id: str, depth: int = 0) -> str:
         """取块的完整 kramdown；标题/段落等容器块的子块不在返回值里，需递归补拉。
 
@@ -193,6 +278,9 @@ class SyncEngine:
                            old_deck=row["deck_name"], summary=summary,
                            block_id=sc.block_id, block_updated=sc.updated, box=sc.box)
                 )
+
+        # 新增卡先走 syid tag 接管（映射库缺失时自动恢复，避免重复建卡）
+        self._adopt_existing(plan)
         return plan
 
     # ---- 执行 ----

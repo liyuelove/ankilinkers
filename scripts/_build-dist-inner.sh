@@ -3,7 +3,7 @@
 set -e
 
 STAGING="$PWD/build/nix-libs"
-rm -rf "$STAGING" dist build/ankilinkers
+rm -rf "$STAGING" build/ankilinkers
 mkdir -p "$STAGING"
 
 DIRS=$(echo "$NIX_LDFLAGS" | tr ' ' '\n' | grep '^-L' | sed 's/^-L//' | sort -u)

@@ -42,6 +42,7 @@ class Plan:
     deletes: list[Change] = field(default_factory=list)
     moves: list[Change] = field(default_factory=list)
     skips: list[tuple[str, str]] = field(default_factory=list)  # (card_id, 原因)
+    notices: list[str] = field(default_factory=list)  # 非阻塞提示（如接管已有笔记）
 
     @property
     def change_count(self) -> int:

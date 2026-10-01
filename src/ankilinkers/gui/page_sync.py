@@ -148,6 +148,11 @@ class SyncPage(QWidget):
             QTreeWidgetItem(skip_top, [f"{cid}：{reason}"])
         if len(plan.skips) > _PREVIEW_ITEM_LIMIT:
             QTreeWidgetItem(skip_top, [f"… 共 {len(plan.skips)} 条"])
+        if plan.notices:
+            notice_top = QTreeWidgetItem([f"提示（{len(plan.notices)}）"])
+            self._tree.addTopLevelItem(notice_top)
+            for notice in plan.notices:
+                QTreeWidgetItem(notice_top, [notice])
         self._tree.expandAll()
         if plan.is_empty():
             self._status.setText("预览完成：无变更。")

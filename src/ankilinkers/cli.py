@@ -127,6 +127,8 @@ def _print_plan(plan) -> None:
     print("== 同步计划 ==")
     print(f"  新增 {len(plan.adds)}，更新 {len(plan.updates)}，"
           f"移动 {len(plan.moves)}，删除 {len(plan.deletes)}，跳过 {len(plan.skips)}")
+    for notice in plan.notices:
+        print(f"  [{OK}] {notice}")
     for title, items in (("新增", plan.adds), ("更新", plan.updates),
                          ("移动", plan.moves), ("删除", plan.deletes)):
         if not items:
