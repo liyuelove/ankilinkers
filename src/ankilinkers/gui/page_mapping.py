@@ -1,6 +1,7 @@
 """映射配置页：默认卡组、映射规则（笔记本/文档 → 卡组）与保存前预演。"""
 from __future__ import annotations
 
+import re
 from collections import Counter
 from typing import TYPE_CHECKING
 
@@ -30,6 +31,8 @@ from .worker import Worker
 if TYPE_CHECKING:
     from .app import MainWindow
 
+_DOC_ID = re.compile(r"^\d{14}-[A-Za-z0-9]+$")
+
 
 class MappingPage(QWidget):
     """映射配置页：管理默认卡组与卡组映射规则，支持保存前预演影响。"""
@@ -40,6 +43,7 @@ class MappingPage(QWidget):
         self._worker: Worker | None = None
         self._conn_ok = False
         self._notebooks: list[dict] = []
+        self._doc_names: dict[str, str] = {}
 
         # ---- 默认卡组 ----
         self._deck_edit = QLineEdit(host.cfg.default_deck)
@@ -50,10 +54,17 @@ class MappingPage(QWidget):
         deck_row.addWidget(self._deck_edit, 1)
         deck_row.addWidget(self._btn_save_deck)
 
-        # ---- 规则表格 ----
+        # ---- 规则表格（列宽可拖拽调整，超出自动出横向滚动条）----
         self._table = QTableWidget(0, 4)
         self._table.setHorizontalHeaderLabels(["类型", "源", "目标卡组", "操作"])
-        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(0, 64)
+        header.resizeSection(1, 460)
+        header.resizeSection(2, 220)
+        header.resizeSection(3, 80)
+        header.setStretchLastSection(False)
+        self._table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
@@ -61,11 +72,19 @@ class MappingPage(QWidget):
         self._type_combo = QComboBox()
         self._type_combo.addItems(["笔记本", "文档"])
         self._nb_combo = QComboBox()
-        self._doc_edit = QLineEdit()
-        self._doc_edit.setPlaceholderText("文档 rootID（如 20200812220555-lj3enxa）")
+        self._doc_combo = QComboBox()
+        self._doc_combo.setEditable(True)
+        self._doc_combo.lineEdit().setPlaceholderText("输入文档名关键字后点「搜索」，或直接粘贴 rootID")
+        self._btn_search_doc = QPushButton("搜索")
+        self._btn_search_doc.clicked.connect(self._search_docs)
+        doc_page = QWidget()
+        doc_row = QHBoxLayout(doc_page)
+        doc_row.setContentsMargins(0, 0, 0, 0)
+        doc_row.addWidget(self._doc_combo, 1)
+        doc_row.addWidget(self._btn_search_doc)
         self._src_stack = QStackedWidget()
         self._src_stack.addWidget(self._nb_combo)
-        self._src_stack.addWidget(self._doc_edit)
+        self._src_stack.addWidget(doc_page)
         self._type_combo.currentIndexChanged.connect(self._src_stack.setCurrentIndex)
         self._deck_combo = QComboBox()
         self._deck_combo.setEditable(True)
@@ -133,12 +152,13 @@ class MappingPage(QWidget):
         self._table.setRowCount(len(rules))
         for row, r in enumerate(rules):
             src_type = "笔记本" if r["src_type"] == "notebook" else "文档"
-            src = r["src_key"]
-            if r["src_type"] == "notebook" and nb_names.get(src):
-                src = f"{nb_names[src]}（{src}）"
-            self._table.setItem(row, 0, QTableWidgetItem(src_type))
-            self._table.setItem(row, 1, QTableWidgetItem(src))
-            self._table.setItem(row, 2, QTableWidgetItem(r["deck_name"]))
+            key = r["src_key"]
+            name = nb_names.get(key) if r["src_type"] == "notebook" else self._doc_names.get(key)
+            src = f"{name}（{key}）" if name else key
+            for col, text in ((0, src_type), (1, src), (2, r["deck_name"])):
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                self._table.setItem(row, col, item)
             btn = QPushButton("删除")
             btn.clicked.connect(lambda _checked=False, rid=r["id"]: self._remove_rule(rid))
             self._table.setCellWidget(row, 3, btn)
@@ -154,9 +174,15 @@ class MappingPage(QWidget):
                 QMessageBox.warning(self, "添加规则", "请先点击「刷新笔记本/卡组列表」并选择一个笔记本。")
                 return
         else:
-            src_type, src_key = "doc", self._doc_edit.text().strip()
-            if not src_key:
-                QMessageBox.warning(self, "添加规则", "请输入文档 rootID。")
+            src_type = "doc"
+            text = self._doc_combo.currentText().strip()
+            # 粘贴的原始 rootID 优先；否则用搜索结果的 data（编辑文本不影响 currentIndex 的 data）
+            src_key = text if _DOC_ID.match(text) else self._doc_combo.currentData()
+            if not src_key or not _DOC_ID.match(src_key):
+                QMessageBox.warning(
+                    self, "添加规则",
+                    "请通过「搜索」选择文档，或粘贴合法的文档 rootID（形如 20200812220555-lj3enxa）。",
+                )
                 return
         deck = self._deck_combo.currentText().strip()
         if not deck:
@@ -181,7 +207,12 @@ class MappingPage(QWidget):
     def _do_fetch_lists(self, progress, is_cancelled) -> dict:
         siyuan, anki, storage = self._host.make_clients()
         try:
-            return {"notebooks": siyuan.ls_notebooks(), "decks": anki.deck_names()}
+            doc_ids = [r["src_key"] for r in storage.rules() if r["src_type"] == "doc"]
+            return {
+                "notebooks": siyuan.ls_notebooks(),
+                "decks": anki.deck_names(),
+                "doc_names": siyuan.doc_titles(doc_ids),
+            }
         finally:
             siyuan.close()
             anki.close()
@@ -189,6 +220,7 @@ class MappingPage(QWidget):
 
     def _fill_lists(self, result: dict) -> None:
         self._notebooks = result["notebooks"]
+        self._doc_names = result["doc_names"]
         self._nb_combo.clear()
         for nb in self._notebooks:
             label = f"{nb.get('name', '')}（{nb['id']}）"
@@ -198,6 +230,40 @@ class MappingPage(QWidget):
         self._deck_combo.clear()
         self._deck_combo.addItems(result["decks"])
         self._reload_rules()
+
+    # ---- 文档搜索 ----
+    def _search_docs(self) -> None:
+        keyword = self._doc_combo.currentText().strip()
+        if not keyword:
+            QMessageBox.information(self, "搜索文档", "请先输入文档名关键字。")
+            return
+        if self._worker is not None and self._worker.isRunning():
+            return
+        self._btn_search_doc.setEnabled(False)
+        self._worker = Worker(lambda p, c: self._do_search_docs(keyword), self)
+        self._worker.succeeded.connect(self._fill_doc_results)
+        self._worker.failed.connect(
+            lambda msg: QMessageBox.warning(self, "搜索文档失败", msg)
+        )
+        self._worker.finished.connect(self._on_finished)
+        self._worker.start()
+
+    def _do_search_docs(self, keyword: str) -> list[dict]:
+        siyuan, anki, storage = self._host.make_clients()
+        try:
+            return siyuan.search_docs(keyword)
+        finally:
+            siyuan.close()
+            anki.close()
+            storage.close()
+
+    def _fill_doc_results(self, docs: list[dict]) -> None:
+        self._doc_combo.clear()
+        for d in docs:
+            self._doc_combo.addItem(f"{d['content']} — {d['hpath']}（{d['id']}）", d["id"])
+        if not docs:
+            self._doc_combo.lineEdit().setText("")
+            QMessageBox.information(self, "搜索文档", "未找到匹配的文档。")
 
     # ---- 预演 ----
     def _rehearse(self) -> None:
@@ -267,6 +333,7 @@ class MappingPage(QWidget):
 
     def _on_finished(self) -> None:
         self._btn_fetch.setEnabled(True)
+        self._btn_search_doc.setEnabled(True)
         self._btn_rehearse.setEnabled(self._conn_ok)
         self._rehearse_hint.setText("预演只统计各卡组落点数量，不执行任何写入。")
         if self._worker is not None:

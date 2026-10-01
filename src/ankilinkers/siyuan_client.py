@@ -89,6 +89,24 @@ class SiYuanClient:
     def sql(self, stmt: str) -> list[dict]:
         return self._post("/api/query/sql", {"stmt": stmt})
 
+    def doc_titles(self, doc_ids: list[str]) -> dict[str, str]:
+        """批量解析文档 rootID → 文档名。"""
+        if not doc_ids:
+            return {}
+        quoted = ",".join("'%s'" % i.replace("'", "''") for i in doc_ids)
+        rows = self.sql(
+            f"SELECT id, content FROM blocks WHERE type='d' AND id IN ({quoted})"
+        )
+        return {r["id"]: r["content"] for r in rows}
+
+    def search_docs(self, keyword: str, limit: int = 20) -> list[dict]:
+        """按标题关键字搜索文档（最近更新优先）。"""
+        kw = keyword.replace("'", "''")
+        return self.sql(
+            "SELECT id, content, hpath, box FROM blocks WHERE type='d' "
+            f"AND content LIKE '%{kw}%' ORDER BY updated DESC LIMIT {int(limit)}"
+        )
+
     def find_flashcard_blocks(self) -> list[dict]:
         """SQL 兜底枚举：按块属性查闪卡块（含旧版属性名）。"""
         return self.sql(
