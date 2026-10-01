@@ -1,0 +1,26 @@
+[project]
+name = "ankilinkers"
+version = "0.1.0"
+description = "思源笔记闪卡 → Anki 单向增量同步工具"
+readme = "README.md"
+authors = [
+    { name = "liyuelove", email = "aa@imiaa.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "platformdirs>=4.12.2",
+    "pyside6>=6.11.2",
+]
+
+[project.scripts]
+ankilinkers = "ankilinkers:main"
+
+[build-system]
+requires = ["uv_build>=0.11.21,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.3",
+]
